@@ -233,14 +233,17 @@ class PaperDS(Dataset):
         if self.labels is not None: item["label"] = int(self.labels[i])
         return item
 
-def make_collate(tok):
-    def fn(batch):
-        enc = tok([b["text"] for b in batch], truncation=True, padding=True,
-                  max_length=MAX_LEN, return_tensors="pt")
+class Collate:
+    """Picklable collate (Python 3.14 forkserver needs this — closures can't pickle)."""
+    def __init__(self, tok, max_len):
+        self.tok = tok
+        self.max_len = max_len
+    def __call__(self, batch):
+        enc = self.tok([b["text"] for b in batch], truncation=True, padding=True,
+                       max_length=self.max_len, return_tensors="pt")
         if "label" in batch[0]:
             enc["labels"] = torch.tensor([b["label"] for b in batch], dtype=torch.long)
         return enc
-    return fn
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -350,10 +353,11 @@ def train_one(model_cfg, tr_texts, tr_y, val_texts, val_y, test_texts, seed):
     tok = AutoTokenizer.from_pretrained(hf_id, token=HF_TOKEN, use_fast=True)
     model = CORNModel(hf_id).to(DEVICE)
 
-    coll = make_collate(tok)
-    tr_loader   = DataLoader(PaperDS(tr_texts, tr_y),   batch_size=batch, shuffle=True,  collate_fn=coll, num_workers=2)
-    val_loader  = DataLoader(PaperDS(val_texts, val_y), batch_size=32,    shuffle=False, collate_fn=coll, num_workers=2)
-    test_loader = DataLoader(PaperDS(test_texts),       batch_size=32,    shuffle=False, collate_fn=coll, num_workers=2)
+    coll = Collate(tok, MAX_LEN)
+    nw = args.num_workers
+    tr_loader   = DataLoader(PaperDS(tr_texts, tr_y),   batch_size=batch, shuffle=True,  collate_fn=coll, num_workers=nw)
+    val_loader  = DataLoader(PaperDS(val_texts, val_y), batch_size=32,    shuffle=False, collate_fn=coll, num_workers=nw)
+    test_loader = DataLoader(PaperDS(test_texts),       batch_size=32,    shuffle=False, collate_fn=coll, num_workers=nw)
 
     param_groups = make_llrd_params(model, lr_head, lr_bb)
     optim = AdamW(param_groups)
