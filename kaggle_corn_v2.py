@@ -91,7 +91,9 @@ def parse_args():
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--warmup-ratio", type=float, default=0.1)
     p.add_argument("--grad-clip", type=float, default=1.0)
-    p.add_argument("--num-workers", type=int, default=2)
+    p.add_argument("--num-workers", type=int, default=0,
+                   help="DataLoader workers. 0 = no multiprocessing (safest on Py 3.14 forkserver). "
+                        "For this dataset size workers add little speedup.")
     p.add_argument("--resume", action="store_true",
                    help="Skip a model if its NPZ already exists in out-dir")
     p.add_argument("--hf-token", default=os.environ.get("HF_ACCESS_TOKEN") or os.environ.get("HF_TOKEN"))
@@ -433,11 +435,13 @@ def train_one(model_cfg, tr_texts, tr_y, val_texts, val_y, test_texts, seed):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Main loop
+# Main loop  (guarded for Python 3.14 forkserver — workers re-import this module,
+# and would otherwise re-enter training and dead-loop)
 # ──────────────────────────────────────────────────────────────────────────────
-meta = {"models": [], "global": {}}
+def main():
+  meta = {"models": [], "global": {}}
 
-for cfg in MODELS:
+  for cfg in MODELS:
     hf_id = cfg[0]
     slug  = hf_id.replace("/", "_")
     npz_path = OUT_DIR / f"{slug}_probs.npz"
@@ -496,29 +500,33 @@ for cfg in MODELS:
         "thresholds": [float(x) for x in thr_global],
     })
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Simple weighted ensemble baseline (so we have a submission even without stacking)
-# ──────────────────────────────────────────────────────────────────────────────
-all_npz = [(m["id"], np.load(OUT_DIR / f"{m['id'].replace('/', '_')}_probs.npz"))
-           for m in meta["models"]]
-if all_npz:
-    print("\n=== Quick equal-weight ensemble (baseline) ===")
-    oof_mix  = np.mean([n["oof"]  for _, n in all_npz], axis=0)
-    test_mix = np.mean([n["test"] for _, n in all_npz], axis=0)
-    thr = optimize_thresholds(oof_mix, y_train_idx + 1)
-    q   = qwk(y_train_idx + 1, probs_to_label_thr(oof_mix, thr))
-    print(f"  OOF QWK: {q:.4f}  thr={np.round(thr,3)}")
-    meta["global"]["equal_weight_oof_qwk"] = float(q)
+  # ────────────────────────────────────────────────────────────────────────────
+  # Simple weighted ensemble baseline (so we have a submission even without stacking)
+  # ────────────────────────────────────────────────────────────────────────────
+  all_npz = [(m["id"], np.load(OUT_DIR / f"{m['id'].replace('/', '_')}_probs.npz"))
+             for m in meta["models"]]
+  if all_npz:
+      print("\n=== Quick equal-weight ensemble (baseline) ===")
+      oof_mix  = np.mean([n["oof"]  for _, n in all_npz], axis=0)
+      test_mix = np.mean([n["test"] for _, n in all_npz], axis=0)
+      thr = optimize_thresholds(oof_mix, y_train_idx + 1)
+      q   = qwk(y_train_idx + 1, probs_to_label_thr(oof_mix, thr))
+      print(f"  OOF QWK: {q:.4f}  thr={np.round(thr,3)}")
+      meta["global"]["equal_weight_oof_qwk"] = float(q)
 
-    final = probs_to_label_thr(test_mix, thr)
-    pub_sub  = pd.DataFrame({"id": pub["id"],  "Label": final[:len(pub)]})
-    priv_sub = pd.DataFrame({"id": priv["id"], "Label": final[len(pub):]})
-    pd.concat([pub_sub, priv_sub], ignore_index=True).to_csv(OUT_DIR / "submission_corn_avg.csv", index=False)
-    pub_sub.to_csv(OUT_DIR / "public_submission_corn_avg.csv", index=False)
-    priv_sub.to_csv(OUT_DIR / "private_submission_corn_avg.csv", index=False)
-    print(f"  Wrote submission_corn_avg.csv")
+      final = probs_to_label_thr(test_mix, thr)
+      pub_sub  = pd.DataFrame({"id": pub["id"],  "Label": final[:len(pub)]})
+      priv_sub = pd.DataFrame({"id": priv["id"], "Label": final[len(pub):]})
+      pd.concat([pub_sub, priv_sub], ignore_index=True).to_csv(OUT_DIR / "submission_corn_avg.csv", index=False)
+      pub_sub.to_csv(OUT_DIR / "public_submission_corn_avg.csv", index=False)
+      priv_sub.to_csv(OUT_DIR / "private_submission_corn_avg.csv", index=False)
+      print(f"  Wrote submission_corn_avg.csv")
 
-with open(OUT_DIR / "meta.json", "w") as f:
-    json.dump(meta, f, indent=2)
-print(f"\nDone. NPZ files + meta.json saved to {OUT_DIR}")
-print("Download all *_probs.npz and meta.json, then run solve_stacking_v2.py locally.")
+  with open(OUT_DIR / "meta.json", "w") as f:
+      json.dump(meta, f, indent=2)
+  print(f"\nDone. NPZ files + meta.json saved to {OUT_DIR}")
+  print("Download all *_probs.npz and meta.json, then run solve_stacking_v2.py locally.")
+
+
+if __name__ == "__main__":
+    main()
