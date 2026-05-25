@@ -1,0 +1,23 @@
+# Install torch SEPARATELY first to match the VM's CUDA build, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# (Vast.ai PyTorch images already have torch — skip the torch install there.)
+
+transformers>=4.40,<5.0
+tokenizers>=0.15
+accelerate>=0.27
+
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+scipy>=1.10
+
+# DeBERTa-v3 tokenizer needs sentencepiece + protobuf
+sentencepiece>=0.1.99
+protobuf>=3.20
+
+# Stacking step (solve_stacking_v2.py)
+lightgbm>=4.0
+
+# Misc
+tqdm
+huggingface_hub>=0.20

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Outputs (regenerated)
+outputs/
+*_probs.npz
+*_embeddings.npz
+submission.csv
+submission_*.csv
+public_submission*.csv
+private_submission*.csv
+Test_Submission.csv
+meta.json
+
+# HF cache (only if user accidentally puts it in repo)
+.cache/
+hf_cache/
