@@ -96,23 +96,28 @@ n_train = len(train)
 n_test  = len(pub) + len(priv)
 
 MODEL_MAP = {
-    "scibert":    "allenai_scibert_scivocab_uncased_probs.npz",
-    "specter2":   "allenai_specter2_base_probs.npz",
-    "deberta-v3": "microsoft_deberta-v3-large_probs.npz",
-    "e5-large":   "intfloat_e5-large-v2_probs.npz",
+    "scibert":         "allenai_scibert_scivocab_uncased_probs.npz",
+    "specter2":        "allenai_specter2_base_probs.npz",
+    "deberta-v3":      "microsoft_deberta-v3-large_probs.npz",
+    "e5-large":        "intfloat_e5-large-v2_probs.npz",
+    "deberta-v3-base": "microsoft_deberta-v3-base_probs.npz",
+    "specter-v1":      "allenai_specter_probs.npz",
+    "mpnet-base":      "microsoft_mpnet-base_probs.npz",
+    "roberta-base":    "FacebookAI_roberta-base_probs.npz",
 }
 
 probs = {}
 for key, fname in MODEL_MAP.items():
     fp = PROBS_DIR / fname
     if not fp.exists():
-        print(f"  WARN: missing {fp}")
         continue
     d = np.load(fp)
     assert d["oof"].shape  == (n_train, NUM_LABELS), f"{fname} oof shape {d['oof'].shape}"
     assert d["test"].shape == (n_test,  NUM_LABELS), f"{fname} test shape {d['test'].shape}"
     probs[key] = {"oof": d["oof"], "test": d["test"]}
 
+if not probs:
+    raise SystemExit(f"No NPZ files found in {PROBS_DIR}")
 print(f"Loaded {len(probs)} models: {list(probs)}")
 
 # Per-model OOF QWK + ranking
@@ -120,10 +125,20 @@ oof_qwks = {}
 for k, d in probs.items():
     thr = optimize_thresholds(d["oof"], y)
     oof_qwks[k] = qwk(y, probs_to_label_thr(d["oof"], thr))
-    print(f"  {k:12s}  OOF QWK = {oof_qwks[k]:.4f}")
+    print(f"  {k:16s}  OOF QWK = {oof_qwks[k]:.4f}")
 
-top3 = sorted(oof_qwks, key=oof_qwks.get, reverse=True)[:3]
-print(f"\nTop-3 by OOF QWK: {top3}")
+# Drop models with OOF below threshold relative to best (within 0.07 of max)
+best_q   = max(oof_qwks.values())
+QWK_CUT  = best_q - 0.07          # eg if best 0.66, cut at 0.59
+strong   = [k for k, q in oof_qwks.items() if q >= QWK_CUT]
+weak     = [k for k in oof_qwks if k not in strong]
+print(f"\nStrong models (OOF ≥ {QWK_CUT:.3f}): {strong}")
+if weak:
+    print(f"Weak (excluded from B/E): {weak}")
+
+top_n   = min(3, len(strong))
+topN    = sorted(strong, key=oof_qwks.get, reverse=True)[:top_n]
+print(f"Top-{top_n}: {topN}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -156,25 +171,24 @@ def avg_and_submit(name, keys, weights=None):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# A) Equal-weight all 4
+# A) Equal-weight ALL models
 # ──────────────────────────────────────────────────────────────────────────────
-print("\n[A] equal_avg_all4")
-qA = avg_and_submit("A_equal_avg_all4", list(probs.keys()))
+print(f"\n[A] equal_avg_all  ({list(probs.keys())})")
+qA = avg_and_submit("A_equal_avg_all", list(probs.keys()))
 
 # ──────────────────────────────────────────────────────────────────────────────
-# B) Equal-weight, drop DeBERTa
+# B) Equal-weight, drop weak models (OOF < cutoff)
 # ──────────────────────────────────────────────────────────────────────────────
-keep_B = [k for k in probs if k != "deberta-v3"]
-print(f"\n[B] equal_avg_drop_deb  (using {keep_B})")
-qB = avg_and_submit("B_equal_avg_drop_deb", keep_B)
+print(f"\n[B] equal_avg_strong  ({strong})")
+qB = avg_and_submit("B_equal_avg_strong", strong)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# C) QWK-weighted top-3
+# C) QWK-weighted top-N (strongest only)
 # ──────────────────────────────────────────────────────────────────────────────
-print(f"\n[C] qwk_weighted_top3  ({top3})")
-weights_C = np.array([oof_qwks[k] ** 4 for k in top3])
-print(f"    weights ∝ qwk^4 → {dict(zip(top3, np.round(weights_C / weights_C.sum(), 3)))}")
-qC = avg_and_submit("C_qwk_weighted_top3", top3, weights_C)
+print(f"\n[C] qwk_weighted_top{top_n}  ({topN})")
+weights_C = np.array([oof_qwks[k] ** 4 for k in topN])
+print(f"    weights ∝ qwk^4 → {dict(zip(topN, np.round(weights_C / weights_C.sum(), 3)))}")
+qC = avg_and_submit(f"C_qwk_weighted_top{top_n}", topN, weights_C)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -236,16 +250,16 @@ def lgbm_stack(name, keys):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# D) LGBM stacking all 4
+# D) LGBM stacking ALL models
 # ──────────────────────────────────────────────────────────────────────────────
-print(f"\n[D] lgbm_stack_all4  ({list(probs.keys())})")
-qD = lgbm_stack("D_lgbm_stack_all4", list(probs.keys()))
+print(f"\n[D] lgbm_stack_all  ({list(probs.keys())})")
+qD = lgbm_stack("D_lgbm_stack_all", list(probs.keys()))
 
 # ──────────────────────────────────────────────────────────────────────────────
-# E) LGBM stacking, drop DeBERTa
+# E) LGBM stacking, strong models only
 # ──────────────────────────────────────────────────────────────────────────────
-print(f"\n[E] lgbm_stack_top3  ({keep_B})")
-qE = lgbm_stack("E_lgbm_stack_top3", keep_B)
+print(f"\n[E] lgbm_stack_strong  ({strong})")
+qE = lgbm_stack("E_lgbm_stack_strong", strong)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -255,9 +269,9 @@ print("\n" + "═" * 60)
 print("SUMMARY — sort submissions by OOF QWK desc:")
 print("═" * 60)
 ranking = sorted(
-    [("A_equal_avg_all4", qA), ("B_equal_avg_drop_deb", qB),
-     ("C_qwk_weighted_top3", qC), ("D_lgbm_stack_all4", qD),
-     ("E_lgbm_stack_top3", qE)],
+    [("A_equal_avg_all", qA), ("B_equal_avg_strong", qB),
+     (f"C_qwk_weighted_top{top_n}", qC), ("D_lgbm_stack_all", qD),
+     ("E_lgbm_stack_strong", qE)],
     key=lambda x: x[1], reverse=True,
 )
 for i, (name, q) in enumerate(ranking, 1):

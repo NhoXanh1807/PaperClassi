@@ -60,10 +60,15 @@ from transformers import (
 # ──────────────────────────────────────────────────────────────────────────────
 PRESET_MODELS = {
     # key: (hf_id, size_class)   size_class ∈ {"small", "large"}
-    "scibert":    ("allenai/scibert_scivocab_uncased", "small"),
-    "specter2":   ("allenai/specter2_base",            "small"),
-    "deberta-v3": ("microsoft/deberta-v3-large",       "large"),
-    "e5-large":   ("intfloat/e5-large-v2",             "large"),
+    "scibert":         ("allenai/scibert_scivocab_uncased", "small"),
+    "specter2":        ("allenai/specter2_base",            "small"),
+    "deberta-v3":      ("microsoft/deberta-v3-large",       "large"),
+    "e5-large":        ("intfloat/e5-large-v2",             "large"),
+    # Diversity additions — smaller models that often beat "large" on tiny datasets
+    "deberta-v3-base": ("microsoft/deberta-v3-base",        "small"),
+    "specter-v1":      ("allenai/specter",                  "small"),
+    "mpnet-base":      ("microsoft/mpnet-base",             "small"),
+    "roberta-base":    ("FacebookAI/roberta-base",          "small"),
 }
 
 def parse_args():
