@@ -92,8 +92,12 @@ Detach: `Ctrl+B` rồi `D`. Attach lại: `tmux a -t train`.
 # Chạy nhanh — chỉ 2 model nhỏ, 1 seed
 python kaggle_corn_v2.py --models scibert specter2 --seeds 1
 
-# Skip model đã có NPZ (resume nếu bị OOM/crash giữa chừng)
-python kaggle_corn_v2.py --resume
+# Skip model đã có NPZ (mặc định) — chỉ chạy model mới
+python kaggle_corn_v2.py
+
+# Retrain 1 model cụ thể (tự backup NPZ cũ thành .npz.bak)
+python kaggle_corn_v2.py --models deberta-v3 --overwrite \
+       --epochs-large 12 --amp-dtype bf16
 
 # GPU yếu / VRAM < 16 GB: giảm batch DeBERTa
 python kaggle_corn_v2.py --batch-large 4
@@ -161,7 +165,9 @@ Output: `submission_stacking_v2.csv` — file submit cuối cùng.
 | HF model tải chậm/fail | Set `HF_HOME` ra disk lớn; thử lại. Nếu model gated thì cần `HF_ACCESS_TOKEN`. |
 | `FileNotFoundError: train.csv` | CSV không ở `--data-dir`. Pass `--data-dir /đường/đến/folder`. |
 | SSH disconnect làm mất train | Luôn dùng `tmux` hoặc `nohup`. |
-| Train dừng giữa chừng | Dùng `--resume` để bỏ qua model đã có NPZ. |
+| Train dừng giữa chừng | Mặc định đã skip model có NPZ. Chỉ chạy lại model thiếu. |
+| Cần retrain 1 model | `--models <key> --overwrite`. NPZ cũ → `*.npz.bak`. |
+| NaN loss / val_QWK=0 ở ep1 (DeBERTa) | Đã fix mặc định (AdamW eps=1e-6, bf16). Nếu vẫn: `--amp-dtype fp32`. |
 
 ---
 

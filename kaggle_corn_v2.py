@@ -94,8 +94,13 @@ def parse_args():
     p.add_argument("--num-workers", type=int, default=0,
                    help="DataLoader workers. 0 = no multiprocessing (safest on Py 3.14 forkserver). "
                         "For this dataset size workers add little speedup.")
-    p.add_argument("--resume", action="store_true",
-                   help="Skip a model if its NPZ already exists in out-dir")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Retrain models even if NPZ exists. Old NPZ is backed up as *.npz.bak. "
+                        "Without this flag, existing NPZ is preserved (safe default).")
+    p.add_argument("--adam-eps", type=float, default=1e-6,
+                   help="AdamW epsilon. 1e-6 prevents NaN with DeBERTa-v3 + fp16/bf16.")
+    p.add_argument("--amp-dtype", choices=["auto", "fp16", "bf16", "fp32"], default="auto",
+                   help="AMP precision. 'auto' picks bf16 if GPU supports (Ampere+/A100/3090+), else fp16.")
     p.add_argument("--hf-token", default=os.environ.get("HF_ACCESS_TOKEN") or os.environ.get("HF_TOKEN"))
     return p.parse_args()
 
@@ -110,8 +115,20 @@ for f in ("train.csv", "public_test.csv", "private_test.csv"):
         raise FileNotFoundError(f"Missing {DATA_DIR / f}. Pass --data-dir or set DATA_DIR.")
 
 DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-USE_AMP = DEVICE == "cuda"
-print(f"Device: {DEVICE}  | AMP: {USE_AMP}  | Data: {DATA_DIR}  | Out: {OUT_DIR}")
+
+# Pick AMP dtype. bf16 > fp16 for DeBERTa-v3 stability; no GradScaler needed.
+if DEVICE != "cuda" or args.amp_dtype == "fp32":
+    USE_AMP   = False
+    AMP_DTYPE = torch.float32
+elif args.amp_dtype == "bf16" or (args.amp_dtype == "auto" and torch.cuda.is_bf16_supported()):
+    USE_AMP   = True
+    AMP_DTYPE = torch.bfloat16
+else:
+    USE_AMP   = True
+    AMP_DTYPE = torch.float16
+USE_SCALER = USE_AMP and AMP_DTYPE == torch.float16  # bf16/fp32 don't need GradScaler
+
+print(f"Device: {DEVICE}  | AMP: {USE_AMP} ({AMP_DTYPE})  | Data: {DATA_DIR}  | Out: {OUT_DIR}")
 if DEVICE == "cuda":
     print(f"GPU: {torch.cuda.get_device_name(0)}  | VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
 
@@ -362,12 +379,14 @@ def train_one(model_cfg, tr_texts, tr_y, val_texts, val_y, test_texts, seed):
     test_loader = DataLoader(PaperDS(test_texts),       batch_size=32,    shuffle=False, collate_fn=coll, num_workers=nw)
 
     param_groups = make_llrd_params(model, lr_head, lr_bb)
-    optim = AdamW(param_groups)
+    # eps=1e-6 prevents NaN with DeBERTa-v3 under AMP (default 1e-8 too small)
+    optim = AdamW(param_groups, eps=args.adam_eps)
     total_steps = len(tr_loader) * epochs
     sched = get_linear_schedule_with_warmup(
         optim, num_warmup_steps=int(total_steps * WARMUP_RATIO), num_training_steps=total_steps,
     )
-    scaler = GradScaler(enabled=USE_AMP)
+    # GradScaler only needed for fp16; bf16 and fp32 do not require it
+    scaler = GradScaler(enabled=USE_SCALER)
 
     best_qwk, best_val_probs, best_test_probs = -1.0, None, None
     wait = 0
@@ -379,14 +398,19 @@ def train_one(model_cfg, tr_texts, tr_y, val_texts, val_y, test_texts, seed):
             batch_data = {k: v.to(DEVICE, non_blocking=True) for k, v in batch_data.items()}
             labels = batch_data.pop("labels")
             optim.zero_grad(set_to_none=True)
-            with autocast(enabled=USE_AMP):
+            with autocast(enabled=USE_AMP, dtype=AMP_DTYPE):
                 logits = model(**batch_data)
                 loss   = corn_loss(logits, labels)
-            scaler.scale(loss).backward()
-            scaler.unscale_(optim)
-            nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-            scaler.step(optim)
-            scaler.update()
+            if USE_SCALER:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optim)
+                nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+                scaler.step(optim)
+                scaler.update()
+            else:
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+                optim.step()
             sched.step()
             run_loss += loss.item()
 
@@ -396,7 +420,7 @@ def train_one(model_cfg, tr_texts, tr_y, val_texts, val_y, test_texts, seed):
         with torch.no_grad():
             for b in val_loader:
                 b = {k: v.to(DEVICE, non_blocking=True) for k, v in b.items() if k != "labels"}
-                with autocast(enabled=USE_AMP):
+                with autocast(enabled=USE_AMP, dtype=AMP_DTYPE):
                     p = corn_logits_to_probs(model(**b))
                 val_probs.append(p.cpu().float().numpy())
             val_probs = np.vstack(val_probs)
@@ -446,8 +470,16 @@ def main():
     slug  = hf_id.replace("/", "_")
     npz_path = OUT_DIR / f"{slug}_probs.npz"
     if npz_path.exists():
-        print(f"\n=== SKIP {hf_id} (already saved at {npz_path}) ===")
-        continue
+        if args.overwrite:
+            backup = npz_path.with_suffix(".npz.bak")
+            if backup.exists():
+                backup.unlink()
+            npz_path.rename(backup)
+            print(f"\n=== OVERWRITE {hf_id}: moved old NPZ to {backup.name} ===")
+        else:
+            # Default: don't clobber. Pass --overwrite to retrain.
+            print(f"\n=== SKIP {hf_id} (already saved at {npz_path}, pass --overwrite to retrain) ===")
+            continue
 
     print(f"\n=== Model: {hf_id} ===")
     texts_train = make_text(train, hf_id)
