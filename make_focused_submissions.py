@@ -29,12 +29,15 @@ from scipy.optimize import minimize
 p = argparse.ArgumentParser()
 p.add_argument("--data-dir",  default=".")
 p.add_argument("--probs-dir", default="./outputs")
-p.add_argument("--out-dir",   default=".")
+p.add_argument("--out-dir",   default="./submissions",
+               help="Root folder; writes to {out-dir}/{full,public,private}/")
 args = p.parse_args()
 
 DATA_DIR  = Path(args.data_dir).resolve()
 PROBS_DIR = Path(args.probs_dir).resolve()
 OUT_DIR   = Path(args.out_dir).resolve()
+for sub in ("full", "public", "private"):
+    (OUT_DIR / sub).mkdir(parents=True, exist_ok=True)
 
 NUM_LABELS = 5
 LABEL_VALS = np.array([1, 2, 3, 4, 5], dtype=float)
@@ -85,12 +88,18 @@ assert len(probs) == 4, f"Need all 4 models, got {list(probs)}"
 print(f"Loaded: {list(probs)}\n")
 
 
+_PUB_IDS  = set(pub["id"])
+_PRIV_IDS = set(priv["id"])
+
 def write_sub(name, labels, qoof):
+    """Write full + public-only + private-only CSV variants."""
     sub = pd.DataFrame({"id": list(pub["id"]) + list(priv["id"]),
                         "Label": labels.astype(int)})
-    fp = OUT_DIR / f"submission_{name}.csv"
-    sub.to_csv(fp, index=False)
-    print(f"  wrote {fp.name}  OOF={qoof:.4f}  "
+    fname = f"submission_{name}.csv"
+    sub.to_csv(OUT_DIR / "full" / fname, index=False)
+    sub[sub["id"].isin(_PUB_IDS )].to_csv(OUT_DIR / "public"  / fname, index=False)
+    sub[sub["id"].isin(_PRIV_IDS)].to_csv(OUT_DIR / "private" / fname, index=False)
+    print(f"  wrote {fname}  OOF={qoof:.4f}  "
           f"dist={dict(sub['Label'].value_counts().sort_index())}")
 
 

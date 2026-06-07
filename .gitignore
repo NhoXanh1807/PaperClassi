@@ -6,22 +6,20 @@ __pycache__/
 venv/
 env/
 
-# IDE
+# IDE / OS
 .idea/
 .vscode/
 .DS_Store
 
-# Outputs (regenerated)
-outputs/
-*_probs.npz
-*_embeddings.npz
-submission.csv
-submission_*.csv
-public_submission*.csv
-private_submission*.csv
-Test_Submission.csv
-meta.json
+# Training artifacts (regenerate from kaggle_corn_v2.py)
+*.npz.bak
+*.log
 
-# HF cache (only if user accidentally puts it in repo)
+# Hugging Face cache (only relevant if accidentally placed inside repo)
 .cache/
 hf_cache/
+
+# Optional: do not commit NPZ outputs if they are large (>10 MB)
+# Comment the next two lines out if you DO want NPZs tracked.
+# outputs/*.npz
+# outputs/*.npz.bak

@@ -43,8 +43,8 @@ p.add_argument("--data-dir", default=".",
                help="Folder with train.csv, public_test.csv, private_test.csv")
 p.add_argument("--probs-dir", default="./outputs",
                help="Folder with *_probs.npz from kaggle_corn_v2.py")
-p.add_argument("--out-dir", default=".",
-               help="Where to write submission_*.csv")
+p.add_argument("--out-dir", default="./submissions",
+               help="Root folder; writes to {out-dir}/{full,public,private}/")
 p.add_argument("--folds", type=int, default=5)
 p.add_argument("--seed", type=int, default=42)
 args = p.parse_args()
@@ -52,7 +52,8 @@ args = p.parse_args()
 DATA_DIR  = Path(args.data_dir).resolve()
 PROBS_DIR = Path(args.probs_dir).resolve()
 OUT_DIR   = Path(args.out_dir).resolve()
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+for sub in ("full", "public", "private"):
+    (OUT_DIR / sub).mkdir(parents=True, exist_ok=True)
 
 NUM_LABELS = 5
 LABEL_VALS = np.array([1, 2, 3, 4, 5], dtype=float)
@@ -144,15 +145,20 @@ print(f"Top-{top_n}: {topN}")
 # ──────────────────────────────────────────────────────────────────────────────
 # Submission helpers
 # ──────────────────────────────────────────────────────────────────────────────
+_PUB_IDS  = set(pub["id"])
+_PRIV_IDS = set(priv["id"])
+
 def write_submission(name, test_pred_labels, oof_qwk_val):
-    """test_pred_labels: int array of length n_test (1..5)."""
+    """Write full + public-only + private-only CSV variants."""
     sub = pd.DataFrame({
         "id":    list(pub["id"]) + list(priv["id"]),
         "Label": test_pred_labels.astype(int),
     })
-    fp = OUT_DIR / f"submission_{name}.csv"
-    sub.to_csv(fp, index=False)
-    print(f"  wrote {fp.name}  (OOF QWK ≈ {oof_qwk_val:.4f})  "
+    fname = f"submission_{name}.csv"
+    sub.to_csv(OUT_DIR / "full" / fname, index=False)
+    sub[sub["id"].isin(_PUB_IDS )].to_csv(OUT_DIR / "public"  / fname, index=False)
+    sub[sub["id"].isin(_PRIV_IDS)].to_csv(OUT_DIR / "private" / fname, index=False)
+    print(f"  wrote {fname}  (OOF QWK ≈ {oof_qwk_val:.4f})  "
           f"dist={dict(sub['Label'].value_counts().sort_index())}")
 
 
